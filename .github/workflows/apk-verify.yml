@@ -1,0 +1,75 @@
+name: apk-verify
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'releases/**'
+      - 'tools/apk_verify.py'
+      - '.github/workflows/apk-verify.yml'
+  pull_request:
+    paths:
+      - 'releases/**'
+      - 'tools/apk_verify.py'
+      - '.github/workflows/apk-verify.yml'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Verify release APK(s)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Discover release APKs
+        id: list
+        run: |
+          shopt -s nullglob
+          apks=(releases/*.apk)
+          if [ ${#apks[@]} -eq 0 ]; then
+            echo "no_apks=true" >> "$GITHUB_OUTPUT"
+            echo "No release APKs found - nothing to verify."
+          else
+            echo "no_apks=false" >> "$GITHUB_OUTPUT"
+            echo "Verifying ${#apks[@]} APK(s):"
+            printf '  %s\n' "${apks[@]}"
+          fi
+
+      - name: Verify each APK
+        if: steps.list.outputs.no_apks == 'false'
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          apks=(releases/*.apk)
+          rc=0
+          for apk in "${apks[@]}"; do
+            name="$(basename "$apk" .apk)"
+            echo "::group::Verifying ${apk}"
+            # Default (release-gate) mode: hard-fails on corruption, tampering,
+            # wrong package, unexpected permissions, or an unsigned APK;
+            # reports (but does not block) warnings such as a debug keystore.
+            # Switch to `--strict` once a properly release-signed,
+            # non-debuggable build is published.
+            if python3 tools/apk_verify.py "$apk" --report-dir "report/${name}"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::Verification FAILED for ${apk}"
+              rc=1
+            fi
+          done
+          exit "$rc"
+
+      - name: Upload verification reports
+        if: always() && steps.list.outputs.no_apks == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-verify-reports
+          path: report/
+          if-no-files-found: ignore
